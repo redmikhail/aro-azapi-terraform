@@ -55,40 +55,44 @@ function display_menu_and_get_choice() {
   done
 }
 
+MAIN_PLAN_FILE="main.tfplan"
+APPLY="apply"
+DESTROY="destroy"
+PLAN="plan"
+
 function call_terraform_for_plan_or_apply() {
   local op=$1
 
-  echo ""
-  local resourcePrefix="arotmp${RANDOM}"
-  local TMP_VAR=""
-  read -p "Please enter resource prefix (default [$resourcePrefix]): " TMP_VAR
-  resourcePrefix="${TMP_VAR:-$resourcePrefix}"
+  if [ "$op" == "$APPLY" -a -f "${MAIN_PLAN_FILE}" ]; then
+    printf "\n\n -> Running terraform $op command...\n"
+    terraform apply $MAIN_PLAN_FILE
+  else
+    echo ""
+    local resourcePrefix="arotmp${RANDOM}"
+    local TMP_VAR=""
+    read -p "Please enter resource prefix (default [$resourcePrefix]): " TMP_VAR
+    resourcePrefix="${TMP_VAR:-$resourcePrefix}"
 
-  TMP_VAR=""
-  local location="eastus"
-  read -p "Please enter location (default [$location]): " TMP_VAR
-  location="${TMP_VAR:-$location}"
+    TMP_VAR=""
+    local location="eastus"
+    read -p "Please enter location (default [$location]): " TMP_VAR
+    location="${TMP_VAR:-$location}"
 
-  TMP_VAR=""
-  local aroDomain="${resourcePrefix}${RANDOM}"
-  read -p "Please enter domain (default [$aroDomain]): " TMP_VAR
-  aroDomain="${TMP_VAR:-$aroDomain}"
+    local resourceCreateTimeout="1h"
+    if [ "$op" != "$DESTROY" ]; then
+      TMP_VAR=""
+      read -p "Please enter timeout value for resource creation (default [$resourceCreateTimeout]): " TMP_VAR
+      resourceCreateTimeout="${TMP_VAR:-$resourceCreateTimeout}"
+    fi
 
-  # aroDomain="${resourcePrefix,,''}"
-  local aroClusterServicePrincipalDisplayName="${aroDomain}-aro-sp"
-  pullSecret=$(cat pull-secret.txt)
+    # Subscription id, subscription name, and tenant id of the current subscription
+    subscriptionId=$(az account show --query id --output tsv)
+    subscriptionName=$(az account show --query name --output tsv)
+    tenantId=$(az account show --query tenantId --output tsv)
 
-  # Name and location of the resource group for the Azure Red Hat OpenShift (ARO) cluster
-  local aroResourceGroupName="${resourcePrefix}RG"
+    terraform_apply_or_plan "$op" "$resourcePrefix" "$location" "$tenantId" "$subscriptionId" "$subscriptionName" "$resourceCreateTimeout"
+  fi
 
-  # Subscription id, subscription name, and tenant id of the current subscription
-  subscriptionId=$(az account show --query id --output tsv)
-  subscriptionName=$(az account show --query name --output tsv)
-  tenantId=$(az account show --query tenantId --output tsv)
-
-  terraform_apply_or_plan $op $resourcePrefix $location $aroDomain $tenantId \
-    $aroClusterServicePrincipalDisplayName $aroResourceGroupName \
-    $subscriptionId $subscriptionName
 }
 
 
@@ -185,36 +189,35 @@ function terraform_apply_or_plan() {
   local op="$1"
   local resourcePrefix="$2"
   local location="$3"
-  local aroDomain="$4"
-  local tenantId="$5"
-  local aroClusterServicePrincipalDisplayName="$6"
-  local aroResourceGroupName="$7"
-  local subscriptionId="$8"
-  local subscriptionName="$9"
-  local pullSecret=$(cat pull-secret.txt)
+  local tenantId="$4"
+  local subscriptionId="$5"
+  local subscriptionName="$6"
+  local resourceCreateTimeout="$7"
 
+  local pullSecret=$(cat pull-secret.txt)
+  local aroDomain="${resourcePrefix}01"
+  # aroDomain="${resourcePrefix,,''}"
+
+  local aroClusterServicePrincipalDisplayName="${aroDomain}-aro-sp"
+
+  # Name and location of the resource group for the Azure Red Hat OpenShift (ARO) cluster
+  local aroResourceGroupName="${resourcePrefix}RG"
+
+  # Some of the JSON that we keep to not run az commands again (and again)
   local appServicePrincipalJson="${aroResourceGroupName}-app-service-principal.json"
   local createUserAccessRoleAssignmentJson="${aroResourceGroupName}-create-user-access-role-assignment.json"
   local createContributorRoleAssignmentJson="${aroResourceGroupName}-create-contributor-role-assignment.json"
 
   # local aroResourceProviderServicePrincipalObjectId=$9
   local extraOptions="-auto-approve"
-  local mainPlanFile="main.tfplan"
 
-  if [ "$op" == 'plan' ]; then
-    extraOptions="-out ${mainPlanFile}"   # to output the plan
-  elif [ "$op" == 'apply' -a -f "${mainPlanFile}" ]; then
-    extraOptions="${mainPlanFile}"  # to specify the plan file
+  if [ "$op" == "$PLAN" ]; then
+    extraOptions="-out ${MAIN_PLAN_FILE}"   # to output the plan
   fi
-
-  local TMP_VAR=""
-  local resourceCreateTimeout="1h"
-  read -p "Please enter timeout value for resource creation (default [$resourceCreateTimeout]): " TMP_VAR
-  resourceCreateTimeout="${TMP_VAR:-$resourceCreateTimeout}"
 
   az_register
 
-  if [ "$op" != 'destroy' ]; then
+  if [ "$op" != "$DESTROY" ]; then
     az_check_and_create_resource_group $location $aroResourceGroupName $subscriptionName
     create_service_principal_for_rbac $appServicePrincipalJson $tenantId $aroClusterServicePrincipalDisplayName
   fi
@@ -228,7 +231,7 @@ function terraform_apply_or_plan() {
   local aroClusterServicePrincipalClientSecret=$(jq -r '.password' ${appServicePrincipalJson})
   local aroClusterServicePrincipalObjectId=$(az ad sp show --id $aroClusterServicePrincipalClientId | jq -r '.id')
 
-  if [ "$op" != 'destroy' ]; then
+  if [ "$op" != "$DESTROY" ]; then
     create_role_assignment 'User Access Administrator' \
       $aroClusterServicePrincipalObjectId \
       $aroResourceGroupName \
@@ -258,25 +261,20 @@ function terraform_apply_or_plan() {
   printf "\n\n"
 
   printf "\n\n -> Running terraform $op command...\n"
-  if [ "$op" == 'apply' -a -f "${mainPlanFile}" ]; then
-    terraform apply ${mainPlanFile}
-  else
-    # cat <<TERRAFORM_CMD
-    terraform $op \
-      -compact-warnings \
-      $extraOptions \
-      -var "resource_prefix=$resourcePrefix" \
-      -var "resource_group_name=$aroResourceGroupName" \
-      -var "location=$location" \
-      -var "domain=$aroDomain" \
-      -var "timeout_resource_create=$resourceCreateTimeout" \
-      -var "aro_cluster_aad_sp_client_id=$aroClusterServicePrincipalClientId" \
-      -var "aro_cluster_aad_sp_client_secret=$aroClusterServicePrincipalClientSecret" \
-      -var "aro_cluster_aad_sp_object_id=$aroClusterServicePrincipalObjectId" \
-      -var "aro_rp_aad_sp_object_id=$aroResourceProviderServicePrincipalObjectId" \
-      -var "pull_secret=$pullSecret"
-  # TERRAFORM_CMD
-  fi
+
+  terraform $op \
+    -compact-warnings \
+    $extraOptions \
+    -var "resource_prefix=$resourcePrefix" \
+    -var "resource_group_name=$aroResourceGroupName" \
+    -var "location=$location" \
+    -var "domain=$aroDomain" \
+    -var "timeout_resource_create=$resourceCreateTimeout" \
+    -var "aro_cluster_aad_sp_client_id=$aroClusterServicePrincipalClientId" \
+    -var "aro_cluster_aad_sp_client_secret=$aroClusterServicePrincipalClientSecret" \
+    -var "aro_cluster_aad_sp_object_id=$aroClusterServicePrincipalObjectId" \
+    -var "aro_rp_aad_sp_object_id=$aroResourceProviderServicePrincipalObjectId" \
+    -var "pull_secret=$pullSecret"
 
 }
 
@@ -307,7 +305,7 @@ function delete_resource_group() {
             printf "\n -> DELETING all the resources in resource group \"${resourceGroupToDelete}\"...\n"
             az group delete -y --name "${resourceGroupToDelete}"
             printf "\n    Done!!!\n"
-            rm -f ${resourceGroupToDelete}*.json
+            rm -f ${resourceGroupToDelete}*.json $MAIN_PLAN_FILE
             break;;
           No)
             break;;
