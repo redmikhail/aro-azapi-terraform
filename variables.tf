@@ -1,4 +1,11 @@
+variable "timeout_resource_create" {
+  default     = "1h"
+  description = "Specifies the timeout when creating resource"
+  type        = string
+}
+
 variable "resource_prefix" {
+  default     = "sgtmp"
   description = "Specifies the name prefix for all the Azure resources."
   type        = string
 }
