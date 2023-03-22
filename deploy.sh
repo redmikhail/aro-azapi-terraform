@@ -74,11 +74,6 @@ function call_terraform_for_plan_or_apply() {
   read -p "Please enter domain (default [$aroDomain]): " TMP_VAR
   aroDomain="${TMP_VAR:-$aroDomain}"
 
-  TMP_VAR=""
-  local resourceCreateTimeout="1h"
-  read -p "Please enter timeout value for resource creation (default [$resourceCreateTimeout]): " TMP_VAR
-  resourceCreateTimeout="${TMP_VAR:-$resourceCreateTimeout}"
-
   # aroDomain="${resourcePrefix,,''}"
   local aroClusterServicePrincipalDisplayName="${aroDomain}-aro-sp"
   pullSecret=$(cat pull-secret.txt)
@@ -93,7 +88,7 @@ function call_terraform_for_plan_or_apply() {
 
   terraform_apply_or_plan $op $resourcePrefix $location $aroDomain $tenantId \
     $aroClusterServicePrincipalDisplayName $aroResourceGroupName \
-    $subscriptionId $subscriptionName $resourceCreateTimeout
+    $subscriptionId $subscriptionName
 }
 
 
@@ -175,9 +170,9 @@ function create_role_assignment() {
       # --resource-group $aroResourceGroupName \
 
     if [[ $? == 0 ]]; then
-      echo "[$aroClusterServicePrincipalDisplayName] service principal successfully assigned [$roleName] with [$aroResourceGroupName] resource group scope\n"
+      printf "[$aroClusterServicePrincipalDisplayName] service principal successfully assigned [$roleName] with [$aroResourceGroupName] resource group scope\n"
     else
-      echo "Failed to assign [$roleName] role with [$aroResourceGroupName] resource group scope to the [$aroClusterServicePrincipalDisplayName] service principal\n"
+      printf "Failed to assign [$roleName] role with [$aroResourceGroupName] resource group scope to the [$aroClusterServicePrincipalDisplayName] service principal\n"
       exit
     fi
   else
@@ -187,16 +182,15 @@ function create_role_assignment() {
 
 
 function terraform_apply_or_plan() {
-  local op=$1
-  local resourcePrefix=$2
-  local location=$3
-  local aroDomain=$4
-  local tenantId=$5
-  local aroClusterServicePrincipalDisplayName=$6
-  local aroResourceGroupName=$7
-  local subscriptionId=$8
-  local subscriptionName=$9
-  local resourceCreateTimeout=$10
+  local op="$1"
+  local resourcePrefix="$2"
+  local location="$3"
+  local aroDomain="$4"
+  local tenantId="$5"
+  local aroClusterServicePrincipalDisplayName="$6"
+  local aroResourceGroupName="$7"
+  local subscriptionId="$8"
+  local subscriptionName="$9"
   local pullSecret=$(cat pull-secret.txt)
 
   local appServicePrincipalJson="${aroResourceGroupName}-app-service-principal.json"
@@ -210,8 +204,13 @@ function terraform_apply_or_plan() {
   if [ "$op" == 'plan' ]; then
     extraOptions="-out ${mainPlanFile}"   # to output the plan
   elif [ "$op" == 'apply' -a -f "${mainPlanFile}" ]; then
-    extraOptions="${extraOptions} ${mainPlanFile}"  # to specify the plan file
+    extraOptions="${mainPlanFile}"  # to specify the plan file
   fi
+
+  local TMP_VAR=""
+  local resourceCreateTimeout="1h"
+  read -p "Please enter timeout value for resource creation (default [$resourceCreateTimeout]): " TMP_VAR
+  resourceCreateTimeout="${TMP_VAR:-$resourceCreateTimeout}"
 
   az_register
 
@@ -252,26 +251,32 @@ function terraform_apply_or_plan() {
             aroClusterServicePrincipalDisplayName aroResourceGroupName \
             subscriptionId subscriptionName extraOptions \
             aroClusterServicePrincipalClientId aroClusterServicePrincipalObjectId \
-            aroResourceProviderServicePrincipalObjectId
+            aroResourceProviderServicePrincipalObjectId resourceCreateTimeout
   do
     printf "\n     - $i=${!i}"
   done
   printf "\n\n"
 
   printf "\n\n -> Running terraform $op command...\n"
-  terraform $op \
-    -compact-warnings \
-    $extraOptions \
-    -var "resource_prefix=$resourcePrefix" \
-    -var "resource_group_name=$aroResourceGroupName" \
-    -var "location=$location" \
-    -var "domain=$aroDomain" \
-    -var "pull_secret=$pullSecret" \
-    -var "aro_cluster_aad_sp_client_id=$aroClusterServicePrincipalClientId" \
-    -var "aro_cluster_aad_sp_client_secret=$aroClusterServicePrincipalClientSecret" \
-    -var "aro_cluster_aad_sp_object_id=$aroClusterServicePrincipalObjectId" \
-    -var "aro_rp_aad_sp_object_id=$aroResourceProviderServicePrincipalObjectId" \
-    -var "timeout_resource_create=$resourceCreateTimeout"
+  if [ "$op" == 'apply' -a -f "${mainPlanFile}" ]; then
+    terraform apply ${mainPlanFile}
+  else
+    # cat <<TERRAFORM_CMD
+    terraform $op \
+      -compact-warnings \
+      $extraOptions \
+      -var "resource_prefix=$resourcePrefix" \
+      -var "resource_group_name=$aroResourceGroupName" \
+      -var "location=$location" \
+      -var "domain=$aroDomain" \
+      -var "timeout_resource_create=$resourceCreateTimeout" \
+      -var "aro_cluster_aad_sp_client_id=$aroClusterServicePrincipalClientId" \
+      -var "aro_cluster_aad_sp_client_secret=$aroClusterServicePrincipalClientSecret" \
+      -var "aro_cluster_aad_sp_object_id=$aroClusterServicePrincipalObjectId" \
+      -var "aro_rp_aad_sp_object_id=$aroResourceProviderServicePrincipalObjectId" \
+      -var "pull_secret=$pullSecret"
+  # TERRAFORM_CMD
+  fi
 
 }
 
