@@ -88,7 +88,11 @@ resource "azapi_resource" "aro_cluster" {
   parent_id = data.azurerm_resource_group.resource_group.id
   type      = "Microsoft.RedHatOpenShift/openShiftClusters@2022-04-01"
   tags      = var.tags
-  
+
+  timeouts {
+    create = var.timeout_resource_create
+  }
+
   body = jsonencode({
     properties = {
       clusterProfile = {
